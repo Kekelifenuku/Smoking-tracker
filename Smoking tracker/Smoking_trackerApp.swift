@@ -9,9 +9,12 @@ import SwiftUI
 
 @main
 struct Smoking_trackerApp: App {
+    @StateObject private var data = SmokingTrackerData()
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(data)
         }
     }
 }
