@@ -1,14 +1,24 @@
 import SwiftUI
 import Foundation
+import UserNotifications
 
 // MARK: - Data Models
-struct SmokingSession: Identifiable, Codable {
-    let id = UUID()
+struct SmokingSession: Identifiable, Codable, Equatable {
+    let id: UUID
     let timestamp: Date
     let triggerType: TriggerType
     let location: String
     let mood: MoodType
     let notes: String
+    
+    init(id: UUID = UUID(), timestamp: Date, triggerType: TriggerType, location: String, mood: MoodType, notes: String) {
+        self.id = id
+        self.timestamp = timestamp
+        self.triggerType = triggerType
+        self.location = location
+        self.mood = mood
+        self.notes = notes
+    }
     
     enum TriggerType: String, CaseIterable, Codable {
         case stress = "Stress"
@@ -27,6 +37,10 @@ struct SmokingSession: Identifiable, Codable {
             case .alcohol: return "wineglass"
             case .break: return "pause.circle"
             }
+        }
+        
+        var displayName: String {
+            rawValue
         }
     }
     
@@ -48,16 +62,29 @@ struct SmokingSession: Identifiable, Codable {
             case .neutral: return "😐"
             }
         }
+        
+        var displayName: String {
+            rawValue
+        }
     }
 }
 
-struct Milestone: Identifiable {
-    let id = UUID()
+struct Milestone: Identifiable, Equatable {
+    let id: UUID
     let title: String
     let description: String
     let hoursRequired: Int
     let icon: String
     let color: Color
+    
+    init(id: UUID = UUID(), title: String, description: String, hoursRequired: Int, icon: String, color: Color) {
+        self.id = id
+        self.title = title
+        self.description = description
+        self.hoursRequired = hoursRequired
+        self.icon = icon
+        self.color = color
+    }
     
     static let milestones = [
         Milestone(title: "20 Minutes", description: "Heart rate returns to normal", hoursRequired: 0, icon: "heart", color: .red),
@@ -72,19 +99,165 @@ struct Milestone: Identifiable {
     ]
 }
 
-struct CravingEntry: Identifiable, Codable {
-    let id = UUID()
+struct CravingEntry: Identifiable, Codable, Equatable {
+    let id: UUID
     let timestamp: Date
     let intensity: Int // 1-10
     let duration: TimeInterval
     let copingStrategy: String
     let wasSuccessful: Bool
+    
+    init(id: UUID = UUID(), timestamp: Date, intensity: Int, duration: TimeInterval, copingStrategy: String, wasSuccessful: Bool) {
+        self.id = id
+        self.timestamp = timestamp
+        self.intensity = intensity
+        self.duration = duration
+        self.copingStrategy = copingStrategy
+        self.wasSuccessful = wasSuccessful
+    }
+}
+
+struct DailyCheckIn: Identifiable, Codable, Equatable {
+    let id: UUID
+    let date: Date
+    let mood: SmokingSession.MoodType
+    let cravingsCount: Int
+    let copingStrategiesUsed: [String]
+    let notes: String
+    let goalsForTomorrow: String
+    
+    init(id: UUID = UUID(), date: Date, mood: SmokingSession.MoodType, cravingsCount: Int, copingStrategiesUsed: [String], notes: String, goalsForTomorrow: String) {
+        self.id = id
+        self.date = date
+        self.mood = mood
+        self.cravingsCount = cravingsCount
+        self.copingStrategiesUsed = copingStrategiesUsed
+        self.notes = notes
+        self.goalsForTomorrow = goalsForTomorrow
+    }
+}
+
+struct NotificationSettings: Codable, Equatable {
+    var isEnabled: Bool
+    var reminderTime: Date
+    var dailyReminderEnabled: Bool
+    var milestoneRemindersEnabled: Bool
+    
+    init(isEnabled: Bool = true, reminderTime: Date = Calendar.current.date(bySettingHour: 20, minute: 0, second: 0, of: Date()) ?? Date(), dailyReminderEnabled: Bool = true, milestoneRemindersEnabled: Bool = true) {
+        self.isEnabled = isEnabled
+        self.reminderTime = reminderTime
+        self.dailyReminderEnabled = dailyReminderEnabled
+        self.milestoneRemindersEnabled = milestoneRemindersEnabled
+    }
+}
+
+// MARK: - Notification Manager
+class NotificationManager: ObservableObject {
+    static let shared = NotificationManager()
+    
+    @Published var settings: NotificationSettings {
+        didSet {
+            saveSettings()
+            updateNotifications()
+        }
+    }
+    
+    private let userDefaults = UserDefaults.standard
+    private let settingsKey = "notificationSettings"
+    
+    private init() {
+        if let data = userDefaults.data(forKey: settingsKey),
+           let decoded = try? JSONDecoder().decode(NotificationSettings.self, from: data) {
+            self.settings = decoded
+        } else {
+            self.settings = NotificationSettings()
+        }
+        
+        requestAuthorization()
+    }
+    
+    private func saveSettings() {
+        if let encoded = try? JSONEncoder().encode(settings) {
+            userDefaults.set(encoded, forKey: settingsKey)
+        }
+    }
+    
+    func requestAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { success, error in
+            if success {
+                print("Notification authorization granted")
+                self.updateNotifications()
+            } else if let error = error {
+                print("Notification authorization error: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    func updateNotifications() {
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+        
+        guard settings.isEnabled else { return }
+        
+        if settings.dailyReminderEnabled {
+            scheduleDailyReminder()
+        }
+        
+        if settings.milestoneRemindersEnabled {
+            scheduleMilestoneReminders()
+        }
+    }
+    
+    private func scheduleDailyReminder() {
+        let content = UNMutableNotificationContent()
+        content.title = "Time for your daily check-in"
+        content.body = "How was your smoke-free day? Track your progress and stay motivated!"
+        content.sound = .default
+        
+        let components = Calendar.current.dateComponents([.hour, .minute], from: settings.reminderTime)
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+        
+        let request = UNNotificationRequest(identifier: "dailyCheckInReminder", content: content, trigger: trigger)
+        
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("Error scheduling daily reminder: \(error.localizedDescription)")
+            } else {
+                print("Daily reminder scheduled for \(components.hour!):\(components.minute!)")
+            }
+        }
+    }
+    
+    private func scheduleMilestoneReminders() {
+        // Schedule reminders for upcoming milestones
+        for milestone in Milestone.milestones {
+            let hours = milestone.hoursRequired
+            if hours > 0 {
+                let triggerDate = Calendar.current.date(byAdding: .hour, value: hours, to: Date())!
+                let components = Calendar.current.dateComponents([.year, .month, .day, .hour], from: triggerDate)
+                
+                let content = UNMutableNotificationContent()
+                content.title = "Milestone Achieved! 🎉"
+                content.body = "You've reached: \(milestone.title) - \(milestone.description)"
+                content.sound = .default
+                
+                let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+                let request = UNNotificationRequest(identifier: "milestone\(hours)", content: content, trigger: trigger)
+                
+                UNUserNotificationCenter.current().add(request) { error in
+                    if let error = error {
+                        print("Error scheduling milestone reminder: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Data Manager
 class SmokingTrackerData: ObservableObject {
     @Published var smokingSessions: [SmokingSession] = []
     @Published var cravings: [CravingEntry] = []
+    @Published var dailyCheckIns: [DailyCheckIn] = []
     @Published var quitDate: Date = Date()
     @Published var cigarettesPerDayBefore: Int = 10
     @Published var pricePerPack: Double = 8.0
@@ -103,6 +276,9 @@ class SmokingTrackerData: ObservableObject {
         if let encoded = try? JSONEncoder().encode(cravings) {
             userDefaults.set(encoded, forKey: "cravings")
         }
+        if let encoded = try? JSONEncoder().encode(dailyCheckIns) {
+            userDefaults.set(encoded, forKey: "dailyCheckIns")
+        }
         userDefaults.set(quitDate.timeIntervalSince1970, forKey: "quitDate")
         userDefaults.set(cigarettesPerDayBefore, forKey: "cigarettesPerDayBefore")
         userDefaults.set(pricePerPack, forKey: "pricePerPack")
@@ -117,6 +293,10 @@ class SmokingTrackerData: ObservableObject {
         if let data = userDefaults.data(forKey: "cravings"),
            let decoded = try? JSONDecoder().decode([CravingEntry].self, from: data) {
             cravings = decoded
+        }
+        if let data = userDefaults.data(forKey: "dailyCheckIns"),
+           let decoded = try? JSONDecoder().decode([DailyCheckIn].self, from: data) {
+            dailyCheckIns = decoded
         }
         let quitDateTimestamp = userDefaults.double(forKey: "quitDate")
         if quitDateTimestamp > 0 {
@@ -138,6 +318,18 @@ class SmokingTrackerData: ObservableObject {
     func addCraving(_ craving: CravingEntry) {
         cravings.append(craving)
         saveData()
+    }
+    
+    func addDailyCheckIn(_ checkIn: DailyCheckIn) {
+        // Remove any existing check-in for the same day
+        dailyCheckIns.removeAll { Calendar.current.isDate($0.date, inSameDayAs: checkIn.date) }
+        dailyCheckIns.append(checkIn)
+        saveData()
+    }
+    
+    func getTodaysCheckIn() -> DailyCheckIn? {
+        let today = Calendar.current.startOfDay(for: Date())
+        return dailyCheckIns.first { Calendar.current.isDate($0.date, inSameDayAs: today) }
     }
     
     var daysSinceQuit: Int {
@@ -179,14 +371,37 @@ class SmokingTrackerData: ObservableObject {
         
         return max(0, streak - 1) // Subtract 1 because we include today
     }
+    
+    var consecutiveCheckIns: Int {
+        let calendar = Calendar.current
+        let sortedCheckIns = dailyCheckIns.sorted { $0.date > $1.date }
+        
+        var consecutive = 0
+        var currentDate = calendar.startOfDay(for: Date())
+        
+        for checkIn in sortedCheckIns {
+            if calendar.isDate(checkIn.date, inSameDayAs: currentDate) {
+                consecutive += 1
+                currentDate = calendar.date(byAdding: .day, value: -1, to: currentDate)!
+            } else {
+                break
+            }
+        }
+        
+        return consecutive
+    }
 }
 
-
-
+// MARK: - Main Content View
 struct ContentView: View {
+    @StateObject private var data = SmokingTrackerData()
+    @StateObject private var notificationManager = NotificationManager.shared
+    @State private var showingDailyCheckIn = false
+    @State private var hasCheckedInToday = false
+    
     var body: some View {
         TabView {
-            DashboardView()
+            DashboardView(showingDailyCheckIn: $showingDailyCheckIn, hasCheckedInToday: $hasCheckedInToday)
                 .tabItem {
                     Image(systemName: "chart.bar.fill")
                     Text("Dashboard")
@@ -204,6 +419,12 @@ struct ContentView: View {
                     Text("Milestones")
                 }
             
+            DailyCheckInView(showingDailyCheckIn: $showingDailyCheckIn, hasCheckedInToday: $hasCheckedInToday)
+                .tabItem {
+                    Image(systemName: "calendar")
+                    Text("Daily Check-in")
+                }
+            
             SettingsView()
                 .tabItem {
                     Image(systemName: "gear")
@@ -211,23 +432,43 @@ struct ContentView: View {
                 }
         }
         .accentColor(.blue)
+        .environmentObject(data)
+        .environmentObject(notificationManager)
+        .onAppear {
+            checkIfUserHasCheckedInToday()
+        }
+        .sheet(isPresented: $showingDailyCheckIn) {
+            DailyCheckInFormView(isPresented: $showingDailyCheckIn, hasCheckedInToday: $hasCheckedInToday)
+        }
+    }
+    
+    private func checkIfUserHasCheckedInToday() {
+        hasCheckedInToday = data.getTodaysCheckIn() != nil
     }
 }
 
 // MARK: - Dashboard View
 struct DashboardView: View {
     @EnvironmentObject var data: SmokingTrackerData
+    @EnvironmentObject var notificationManager: NotificationManager
+    @Binding var showingDailyCheckIn: Bool
+    @Binding var hasCheckedInToday: Bool
     @State private var showingAddSession = false
     
     var body: some View {
         NavigationView {
             ScrollView {
                 LazyVStack(spacing: 20) {
+                    // Daily Check-in Prompt
+                    if !hasCheckedInToday {
+                        DailyCheckInPromptView(showingDailyCheckIn: $showingDailyCheckIn)
+                    }
+                    
                     // Main Stats
                     StatsCardView()
                     
                     // Quick Actions
-                    QuickActionsView(showingAddSession: $showingAddSession)
+                    QuickActionsView(showingAddSession: $showingAddSession, showingDailyCheckIn: $showingDailyCheckIn)
                     
                     // Progress Chart
                     ProgressChartView()
@@ -245,6 +486,46 @@ struct DashboardView: View {
     }
 }
 
+struct DailyCheckInPromptView: View {
+    @Binding var showingDailyCheckIn: Bool
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "calendar.badge.clock")
+                    .foregroundColor(.blue)
+                    .font(.title2)
+                
+                VStack(alignment: .leading) {
+                    Text("Daily Check-in")
+                        .font(.headline)
+                    Text("Complete your daily progress tracking")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                Button(action: {
+                    showingDailyCheckIn = true
+                }) {
+                    Text("Check In")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                }
+            }
+        }
+        .padding()
+        .background(Color.blue.opacity(0.1))
+        .cornerRadius(12)
+    }
+}
+
 struct StatsCardView: View {
     @EnvironmentObject var data: SmokingTrackerData
     
@@ -258,6 +539,11 @@ struct StatsCardView: View {
             HStack {
                 StatView(title: "Cigarettes Avoided", value: "\(data.cigarettesAvoided)", color: .orange)
                 StatView(title: "Money Saved", value: String(format: "$%.2f", data.moneySaved), color: .purple)
+            }
+            
+            HStack {
+                StatView(title: "Daily Check-ins", value: "\(data.consecutiveCheckIns)", color: .red)
+                StatView(title: "Cravings Today", value: "\(data.cravings.filter { Calendar.current.isDateInToday($0.timestamp) }.count)", color: .pink)
             }
         }
         .padding()
@@ -291,6 +577,7 @@ struct StatView: View {
 
 struct QuickActionsView: View {
     @Binding var showingAddSession: Bool
+    @Binding var showingDailyCheckIn: Bool
     @State private var showingCravingHelp = false
     
     var body: some View {
@@ -305,6 +592,10 @@ struct QuickActionsView: View {
                 
                 ActionButton(title: "Beat Craving", icon: "checkmark.circle", color: .green) {
                     showingCravingHelp = true
+                }
+                
+                ActionButton(title: "Daily Check-in", icon: "calendar", color: .blue) {
+                    showingDailyCheckIn = true
                 }
             }
         }
@@ -431,6 +722,251 @@ struct SessionRowView: View {
         .padding()
         .background(Color(.systemGray6))
         .cornerRadius(8)
+    }
+}
+
+// MARK: - Daily Check-in Views
+struct DailyCheckInView: View {
+    @EnvironmentObject var data: SmokingTrackerData
+    @Binding var showingDailyCheckIn: Bool
+    @Binding var hasCheckedInToday: Bool
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                LazyVStack(spacing: 20) {
+                    if !hasCheckedInToday {
+                        DailyCheckInPromptView(showingDailyCheckIn: $showingDailyCheckIn)
+                    }
+                    
+                    CheckInHistoryView()
+                    
+                    CheckInStatsView()
+                }
+                .padding()
+            }
+            .navigationTitle("Daily Check-in")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: {
+                        showingDailyCheckIn = true
+                    }) {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct CheckInHistoryView: View {
+    @EnvironmentObject var data: SmokingTrackerData
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Check-in History")
+                .font(.headline)
+            
+            if data.dailyCheckIns.isEmpty {
+                Text("No check-ins recorded yet")
+                    .foregroundColor(.secondary)
+                    .italic()
+                    .padding()
+            } else {
+                ForEach(data.dailyCheckIns.sorted(by: { $0.date > $1.date }).prefix(7), id: \.id) { checkIn in
+                    CheckInRowView(checkIn: checkIn)
+                }
+            }
+        }
+    }
+}
+
+struct CheckInRowView: View {
+    let checkIn: DailyCheckIn
+    private let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        return formatter
+    }()
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(dateFormatter.string(from: checkIn.date))
+                    .font(.headline)
+                
+                Spacer()
+                
+                Text(checkIn.mood.emoji)
+                    .font(.title2)
+            }
+            
+            HStack {
+                Text("\(checkIn.cravingsCount) cravings")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                Text("\(checkIn.copingStrategiesUsed.count) strategies used")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            
+            if !checkIn.notes.isEmpty {
+                Text(checkIn.notes)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(8)
+    }
+}
+
+struct CheckInStatsView: View {
+    @EnvironmentObject var data: SmokingTrackerData
+    
+    var averageCravings: Double {
+        guard !data.dailyCheckIns.isEmpty else { return 0 }
+        let total = data.dailyCheckIns.reduce(0) { $0 + $1.cravingsCount }
+        return Double(total) / Double(data.dailyCheckIns.count)
+    }
+    
+    var mostCommonMood: SmokingSession.MoodType {
+        guard !data.dailyCheckIns.isEmpty else { return .neutral }
+        let moodCounts = Dictionary(grouping: data.dailyCheckIns, by: { $0.mood })
+            .mapValues { $0.count }
+        return moodCounts.max(by: { $0.value < $1.value })?.key ?? .neutral
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Check-in Statistics")
+                .font(.headline)
+            
+            HStack {
+                StatView(title: "Total Check-ins", value: "\(data.dailyCheckIns.count)", color: .blue)
+                StatView(title: "Avg. Cravings/Day", value: String(format: "%.1f", averageCravings), color: .orange)
+            }
+            
+            HStack {
+                StatView(title: "Current Streak", value: "\(data.consecutiveCheckIns)", color: .green)
+                StatView(title: "Common Mood", value: mostCommonMood.emoji, color: .purple)
+            }
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+    }
+}
+
+struct DailyCheckInFormView: View {
+    @EnvironmentObject var data: SmokingTrackerData
+    @Environment(\.presentationMode) var presentationMode
+    @Binding var isPresented: Bool
+    @Binding var hasCheckedInToday: Bool
+    
+    @State private var selectedMood: SmokingSession.MoodType = .neutral
+    @State private var cravingsCount: Int = 0
+    @State private var selectedStrategies: Set<String> = []
+    @State private var notes: String = ""
+    @State private var goalsForTomorrow: String = ""
+    
+    private let copingStrategies = [
+        "Deep Breathing",
+        "Drink Water",
+        "Go for a Walk",
+        "Call Someone",
+        "Chew Gum",
+        "Meditate",
+        "Exercise",
+        "Distract Yourself"
+    ]
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("How are you feeling today?") {
+                    Picker("Mood", selection: $selectedMood) {
+                        ForEach(SmokingSession.MoodType.allCases, id: \.self) { mood in
+                            HStack {
+                                Text(mood.emoji)
+                                Text(mood.rawValue)
+                            }
+                            .tag(mood)
+                        }
+                    }
+                    .pickerStyle(MenuPickerStyle())
+                }
+                
+                Section("Cravings Today") {
+                    Stepper("Number of cravings: \(cravingsCount)", value: $cravingsCount, in: 0...50)
+                }
+                
+                Section("Coping Strategies Used") {
+                    List(copingStrategies, id: \.self) { strategy in
+                        HStack {
+                            Text(strategy)
+                            Spacer()
+                            if selectedStrategies.contains(strategy) {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.blue)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if selectedStrategies.contains(strategy) {
+                                selectedStrategies.remove(strategy)
+                            } else {
+                                selectedStrategies.insert(strategy)
+                            }
+                        }
+                    }
+                }
+                
+                Section("Notes") {
+                    TextField("How did your day go?", text: $notes, axis: .vertical)
+                        .lineLimit(3...6)
+                }
+                
+                Section("Goals for Tomorrow") {
+                    TextField("What will you do differently tomorrow?", text: $goalsForTomorrow, axis: .vertical)
+                        .lineLimit(2...4)
+                }
+            }
+            .navigationTitle("Daily Check-in")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        isPresented = false
+                    }
+                }
+                
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Save") {
+                        saveCheckIn()
+                        isPresented = false
+                        hasCheckedInToday = true
+                    }
+                }
+            }
+        }
+    }
+    
+    private func saveCheckIn() {
+        let checkIn = DailyCheckIn(
+            date: Date(),
+            mood: selectedMood,
+            cravingsCount: cravingsCount,
+            copingStrategiesUsed: Array(selectedStrategies),
+            notes: notes,
+            goalsForTomorrow: goalsForTomorrow
+        )
+        data.addDailyCheckIn(checkIn)
     }
 }
 
@@ -929,6 +1465,7 @@ struct MilestoneCard: View {
 // MARK: - Settings View
 struct SettingsView: View {
     @EnvironmentObject var data: SmokingTrackerData
+    @EnvironmentObject var notificationManager: NotificationManager
     @State private var showingQuitDatePicker = false
     
     var body: some View {
@@ -980,9 +1517,22 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section("Notifications") {
+                    Toggle("Enable Notifications", isOn: $notificationManager.settings.isEnabled)
+                    
+                    if notificationManager.settings.isEnabled {
+                        DatePicker("Daily Reminder Time", selection: $notificationManager.settings.reminderTime, displayedComponents: .hourAndMinute)
+                        
+                        Toggle("Daily Check-in Reminders", isOn: $notificationManager.settings.dailyReminderEnabled)
+                        
+                        Toggle("Milestone Achievements", isOn: $notificationManager.settings.milestoneRemindersEnabled)
+                    }
+                }
+                
                 Section("Statistics") {
                     StatisticRow(title: "Total Sessions Logged", value: "\(data.smokingSessions.count)")
                     StatisticRow(title: "Total Cravings Tracked", value: "\(data.cravings.count)")
+                    StatisticRow(title: "Daily Check-ins", value: "\(data.dailyCheckIns.count)")
                     StatisticRow(title: "Days Since Quit", value: "\(data.daysSinceQuit)")
                     StatisticRow(title: "Current Streak", value: "\(data.currentStreak) days")
                 }
@@ -1115,6 +1665,5 @@ extension DateFormatter {
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
-            .environmentObject(SmokingTrackerData())
     }
 }
